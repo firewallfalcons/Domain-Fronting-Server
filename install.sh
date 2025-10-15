@@ -1,54 +1,58 @@
 #!/bin/bash
-# DomainFronting Proxy Manager & Installer
+# =========================================================
+# 🌐 DomainFronting Proxy Installer & Manager
 # Author: FirewallFalcon
-# Purpose: Full HAProxy installer, auto-configurator, and service manager
-# Compatible with Ubuntu/Debian systems
+# Version: 1.2.0
+# =========================================================
 
 CONFIG="/etc/haproxy/haproxy.cfg"
 CERT_DIR="/etc/haproxy/certs"
 CERT_FILE="$CERT_DIR/default.pem"
 SERVICE="haproxy"
 
+# Colors
 GREEN="\033[1;32m"
 RED="\033[1;31m"
 YELLOW="\033[1;33m"
+BLUE="\033[1;34m"
 NC="\033[0m"
 
-check_root() {
-    if [[ $EUID -ne 0 ]]; then
-        echo -e "${RED}❌ Please run this script as root (sudo).${NC}"
-        exit 1
-    fi
-}
+# Ensure root
+if [[ $EUID -ne 0 ]]; then
+    echo -e "${RED}❌ Please run as root (sudo).${NC}"
+    exit 1
+fi
 
-install_haproxy() {
-    echo -e "${YELLOW}🔧 Installing HAProxy...${NC}"
+# -----------------------------------------
+#  INSTALLER
+# -----------------------------------------
+install_dependencies() {
+    echo -e "${YELLOW}🔧 Installing dependencies...${NC}"
     apt update -y
-    apt install -y haproxy openssl
+    apt install -y haproxy openssl curl
     mkdir -p "$CERT_DIR"
-    echo -e "${GREEN}✅ HAProxy installed.${NC}"
+    echo -e "${GREEN}✅ Dependencies installed.${NC}"
 }
 
-create_selfsigned_cert() {
-    echo -e "${YELLOW}🔏 Generating self-signed SSL certificate...${NC}"
+generate_selfsigned_cert() {
+    echo -e "${YELLOW}🔏 Generating self-signed certificate...${NC}"
     openssl req -x509 -newkey rsa:2048 -nodes \
         -keyout "$CERT_DIR/default.key" \
         -out "$CERT_DIR/default.crt" \
         -days 365 -subj "/CN=localhost"
     cat "$CERT_DIR/default.key" "$CERT_DIR/default.crt" > "$CERT_FILE"
-    echo -e "${GREEN}✅ Self-signed certificate created at $CERT_FILE${NC}"
+    echo -e "${GREEN}✅ Certificate created at $CERT_FILE${NC}"
 }
 
 use_real_cert() {
-    echo -e "${YELLOW}🔑 Installing real SSL certificate...${NC}"
-    read -p "Path to certificate (.crt or .pem): " cert
+    echo -e "${YELLOW}🔑 Installing real certificate...${NC}"
+    read -p "Path to certificate (.crt/.pem): " cert
     read -p "Path to private key (.key): " key
     if [[ -f "$cert" && -f "$key" ]]; then
         cat "$key" "$cert" > "$CERT_FILE"
         echo -e "${GREEN}✅ Real certificate installed.${NC}"
     else
         echo -e "${RED}❌ Invalid certificate paths.${NC}"
-        exit 1
     fi
 }
 
@@ -103,84 +107,109 @@ backend forward_out
     http-request set-dst-port int(80)
     server dynamic 0.0.0.0:0 resolvers dns init-addr none
 EOF
-    echo -e "${GREEN}✅ Configuration written to $CONFIG${NC}"
+    echo -e "${GREEN}✅ Configuration created at $CONFIG${NC}"
 }
 
-enable_autostart() {
-    systemctl enable $SERVICE
-}
-
-start_proxy() {
+install_service() {
+    echo -e "${YELLOW}🚀 Starting HAProxy service...${NC}"
+    systemctl enable haproxy
     systemctl restart haproxy
-    echo -e "${GREEN}✅ DomainFronting Proxy started successfully.${NC}"
+    echo -e "${GREEN}✅ DomainFronting Proxy is now running.${NC}"
 }
 
-stop_proxy() {
-    systemctl stop haproxy
-    echo -e "${YELLOW}🛑 DomainFronting Proxy stopped.${NC}"
+# -----------------------------------------
+#  MANAGER
+# -----------------------------------------
+frontingproxy_manager() {
+    while true; do
+        clear
+        STATUS=$(systemctl is-active haproxy >/dev/null 2>&1 && echo "✅ Running" || echo "❌ Stopped")
+        CERT_STATUS=$(openssl x509 -in "$CERT_FILE" -noout -issuer >/dev/null 2>&1 && echo "Present" || echo "Missing")
+
+        echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "🌐  ${GREEN}DomainFronting Proxy Manager${NC}"
+        echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "Service Status : $STATUS"
+        echo -e "Certificate    : $CERT_STATUS"
+        echo -e "Config Path    : $CONFIG"
+        echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo
+        echo "[1] Start Proxy"
+        echo "[2] Stop Proxy"
+        echo "[3] Restart Proxy"
+        echo "[4] Rebuild Configuration"
+        echo "[5] Generate Self-Signed Certificate"
+        echo "[6] Use Real Certificate"
+        echo "[7] View Logs"
+        echo "[8] Remove Proxy"
+        echo "[9] Exit"
+        echo
+        read -p "Select an option: " choice
+
+        case "$choice" in
+            1) systemctl start haproxy && echo -e "${GREEN}✅ Started.${NC}" ;;
+            2) systemctl stop haproxy && echo -e "${YELLOW}🛑 Stopped.${NC}" ;;
+            3) systemctl restart haproxy && echo -e "${GREEN}🔁 Restarted.${NC}" ;;
+            4) generate_config && systemctl restart haproxy ;;
+            5) generate_selfsigned_cert && systemctl restart haproxy ;;
+            6) use_real_cert && systemctl restart haproxy ;;
+            7) journalctl -u haproxy -e -n 30 --no-pager ;;
+            8)
+                read -p "⚠️ Are you sure you want to remove it? (y/n): " confirm
+                if [[ $confirm =~ ^[Yy]$ ]]; then
+                    systemctl stop haproxy
+                    apt purge -y haproxy
+                    rm -rf /etc/haproxy
+                    echo -e "${RED}❌ Proxy removed.${NC}"
+                    exit 0
+                fi
+                ;;
+            9) exit 0 ;;
+            *) echo -e "${RED}❌ Invalid choice.${NC}" ;;
+        esac
+        echo
+        read -p "Press Enter to return to the menu..."
+    done
 }
 
-restart_proxy() {
-    systemctl restart haproxy
-    echo -e "${GREEN}🔁 DomainFronting Proxy restarted.${NC}"
-}
+# -----------------------------------------
+#  MAIN INSTALLER
+# -----------------------------------------
+echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "🌐 ${GREEN}DomainFronting Proxy Installer${NC}"
+echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+read -p "Do you want to install DomainFronting Proxy now? (y/n): " install
+if [[ ! $install =~ ^[Yy]$ ]]; then
+    echo -e "${YELLOW}Installation cancelled.${NC}"
+    exit 0
+fi
 
-remove_proxy() {
-    echo -e "${RED}⚠️ Removing DomainFronting Proxy...${NC}"
-    systemctl stop haproxy
-    apt purge -y haproxy
-    rm -rf /etc/haproxy
-    echo -e "${GREEN}✅ DomainFronting Proxy completely removed.${NC}"
-}
+install_dependencies
 
-rebuild_proxy() {
-    stop_proxy
-    generate_config
-    start_proxy
-}
+echo
+read -p "Do you want to use a real SSL certificate? (y/n): " cert_choice
+if [[ $cert_choice =~ ^[Yy]$ ]]; then
+    use_real_cert
+else
+    generate_selfsigned_cert
+fi
 
-install_full() {
-    check_root
-    install_haproxy
-    echo
-    read -p "Do you want to use a real certificate? (y/n): " choice
-    if [[ $choice =~ ^[Yy]$ ]]; then
-        use_real_cert
-    else
-        create_selfsigned_cert
-    fi
-    generate_config
-    enable_autostart
-    start_proxy
-    echo -e "${GREEN}🚀 DomainFronting Proxy is installed and running!${NC}"
-}
+generate_config
+install_service
 
-show_menu() {
-    clear
-    echo -e "${GREEN}╔════════════════════════════════════════════╗"
-    echo -e "║        🌐 DomainFronting Proxy Manager       ║"
-    echo -e "╚════════════════════════════════════════════╝${NC}"
-    echo
-    echo "Usage:"
-    echo "  domainfronting-proxy install      → Install & setup HAProxy"
-    echo "  domainfronting-proxy start        → Start proxy"
-    echo "  domainfronting-proxy stop         → Stop proxy"
-    echo "  domainfronting-proxy restart      → Restart proxy"
-    echo "  domainfronting-proxy rebuild      → Rebuild configuration"
-    echo "  domainfronting-proxy cert-self    → Create new self-signed cert"
-    echo "  domainfronting-proxy cert-real    → Install real certificate"
-    echo "  domainfronting-proxy remove       → Uninstall proxy"
-    echo
-}
+# Create the frontingproxy command
+cat > /usr/local/bin/frontingproxy <<'EOM'
+#!/bin/bash
+bash /etc/haproxy/manager.sh
+EOM
+chmod +x /usr/local/bin/frontingproxy
 
-case "$1" in
-    install) install_full ;;
-    start) start_proxy ;;
-    stop) stop_proxy ;;
-    restart) restart_proxy ;;
-    rebuild) rebuild_proxy ;;
-    cert-self) create_selfsigned_cert ;;
-    cert-real) use_real_cert ;;
-    remove) remove_proxy ;;
-    *) show_menu ;;
-esac
+# Save manager logic
+sed '1,/^# -----------------------------------------$/!d' "$0" > /etc/haproxy/manager.sh
+sed -n '/^# -----------------------------------------$/,/^#  MAIN INSTALLER$/p' "$0" >> /etc/haproxy/manager.sh
+sed -n '/^frontingproxy_manager/,/^# -----------------------------------------$/p' "$0" >> /etc/haproxy/manager.sh
+echo "frontingproxy_manager" >> /etc/haproxy/manager.sh
+chmod +x /etc/haproxy/manager.sh
+
+echo -e "${GREEN}✅ Installation complete!${NC}"
+echo -e "Type ${YELLOW}frontingproxy${NC} to open the manager anytime."
